@@ -32,31 +32,49 @@ esp_err_t megolm_ratchet_advance(megolm_ratchet_t *ratchet)
 {
     if (ratchet == NULL) { return ESP_ERR_INVALID_ARG; }
 
-    /* Find the highest-level part that should advance at this counter */
-    int h = MEGOLM_RATCHET_PARTS - 1; /* default: R3 */
+    /* Increment counter FIRST, then hash based on the NEW counter value.
+     *
+     * The Megolm ratchet only hashes when specific bits of the counter
+     * roll over to zero. At counter 0->1, nothing is hashed because
+     * no bits rolled over. At counter 255->256, the low byte rolled
+     * over so R3 is hashed. At 65535->65536, the low 16 bits rolled
+     * over so R2 and R3 are rehashed. Etc.
+     *
+     * Implementation: find the lowest-numbered part (highest-level)
+     * whose corresponding mask bits are all zero in the NEW counter.
+     * That part self-hashes, and all lower parts are derived from it. */
+
+    uint32_t new_counter = ratchet->counter + 1;
+
+    /* Find which parts need to advance based on the new counter value.
+     * Part i advances when (new_counter & MASK[i]) == 0.
+     * We want the HIGHEST-level (lowest-index) part that triggers. */
+    int h = -1; /* -1 means no part advances */
     for (int i = 0; i < MEGOLM_RATCHET_PARTS; i++) {
-        if ((ratchet->counter & RATCHET_MASKS[i]) == 0) {
+        if ((new_counter & RATCHET_MASKS[i]) == 0) {
             h = i;
             break;
         }
     }
 
-    /* Advance R[h] by self-hashing, then derive lower parts from R[h] */
-    for (int j = h; j < MEGOLM_RATCHET_PARTS; j++) {
-        uint8_t idx = (uint8_t)j;
-        if (j == h) {
-            /* Self-hash: R[h] = HMAC(R[h], byte(h)) */
-            uint8_t tmp[32];
-            crypto_hmac_sha256(ratchet->data[h], 32, &idx, 1, tmp);
-            memcpy(ratchet->data[h], tmp, 32);
-            crypto_wipe(tmp, sizeof(tmp));
-        } else {
-            /* Derive: R[j] = HMAC(R[h], byte(j)) */
-            crypto_hmac_sha256(ratchet->data[h], 32, &idx, 1, ratchet->data[j]);
+    if (h >= 0) {
+        /* Hash R[h] and derive all lower parts from R[h] */
+        for (int j = h; j < MEGOLM_RATCHET_PARTS; j++) {
+            uint8_t idx = (uint8_t)j;
+            if (j == h) {
+                /* Self-hash: R[h] = HMAC(key=R[h], msg=byte(h)) */
+                uint8_t tmp[32];
+                crypto_hmac_sha256(ratchet->data[h], 32, &idx, 1, tmp);
+                memcpy(ratchet->data[h], tmp, 32);
+                crypto_wipe(tmp, sizeof(tmp));
+            } else {
+                /* Derive: R[j] = HMAC(key=R[h], msg=byte(j)) */
+                crypto_hmac_sha256(ratchet->data[h], 32, &idx, 1, ratchet->data[j]);
+            }
         }
     }
 
-    ratchet->counter++;
+    ratchet->counter = new_counter;
     return ESP_OK;
 }
 
@@ -175,6 +193,10 @@ esp_err_t megolm_outbound_encrypt(megolm_outbound_session_t *session,
         return ESP_ERR_NO_MEM;
     }
 
+    ESP_LOGI(TAG, "Megolm encrypt: session=%s, msg_index=%lu, ct_len=%d",
+             session->session_id_b64,
+             (unsigned long)session->ratchet.counter, (int)ct_len);
+
     megolm_payload_t payload = {
         .message_index = session->ratchet.counter,
         .ciphertext = ciphertext,
@@ -200,6 +222,11 @@ esp_err_t megolm_outbound_encrypt(megolm_outbound_session_t *session,
     /* Copy payload to output */
     memcpy(out, payload_buf, payload_len);
     free(payload_buf);
+
+    ESP_LOGI(TAG, "Megolm wire: payload=%d bytes, version=0x%02x, first4=%02x%02x%02x%02x",
+             (int)payload_len, out[0],
+             payload_len > 1 ? out[1] : 0, payload_len > 2 ? out[2] : 0,
+             payload_len > 3 ? out[3] : 0, payload_len > 4 ? out[4] : 0);
 
     /* Append 8-byte truncated HMAC over payload */
     uint8_t full_mac[32];
@@ -348,6 +375,20 @@ esp_err_t megolm_inbound_decrypt(megolm_inbound_session_t *session,
         return err;
     }
 
+    ESP_LOGI(TAG, "Megolm decrypt: msg_index=%lu, ratchet_counter=%lu, session=%s",
+             (unsigned long)payload.message_index,
+             (unsigned long)session->ratchet.counter,
+             session->session_id_b64);
+    ESP_LOGI(TAG, "  BEFORE advance: R0=%02x%02x%02x%02x R1=%02x%02x%02x%02x R2=%02x%02x%02x%02x R3=%02x%02x%02x%02x",
+             session->ratchet.data[0][0], session->ratchet.data[0][1],
+             session->ratchet.data[0][2], session->ratchet.data[0][3],
+             session->ratchet.data[1][0], session->ratchet.data[1][1],
+             session->ratchet.data[1][2], session->ratchet.data[1][3],
+             session->ratchet.data[2][0], session->ratchet.data[2][1],
+             session->ratchet.data[2][2], session->ratchet.data[2][3],
+             session->ratchet.data[3][0], session->ratchet.data[3][1],
+             session->ratchet.data[3][2], session->ratchet.data[3][3]);
+
     /* Advance ratchet to the message index */
     if (payload.message_index < session->ratchet.counter) {
         ESP_LOGE(TAG, "Message index %lu < ratchet counter %lu (replay?)",
@@ -359,10 +400,25 @@ esp_err_t megolm_inbound_decrypt(megolm_inbound_session_t *session,
     err = megolm_ratchet_advance_to(&session->ratchet, payload.message_index);
     if (err != ESP_OK) { return err; }
 
+    ESP_LOGI(TAG, "  AFTER advance_to(%lu): R0=%02x%02x%02x%02x R1=%02x%02x%02x%02x R2=%02x%02x%02x%02x R3=%02x%02x%02x%02x",
+             (unsigned long)payload.message_index,
+             session->ratchet.data[0][0], session->ratchet.data[0][1],
+             session->ratchet.data[0][2], session->ratchet.data[0][3],
+             session->ratchet.data[1][0], session->ratchet.data[1][1],
+             session->ratchet.data[1][2], session->ratchet.data[1][3],
+             session->ratchet.data[2][0], session->ratchet.data[2][1],
+             session->ratchet.data[2][2], session->ratchet.data[2][3],
+             session->ratchet.data[3][0], session->ratchet.data[3][1],
+             session->ratchet.data[3][2], session->ratchet.data[3][3]);
+
     /* Derive keys */
     uint8_t aes_key[32], hmac_key[32], iv[16];
     err = megolm_derive_keys(&session->ratchet, aes_key, hmac_key, iv);
     if (err != ESP_OK) { return err; }
+
+    ESP_LOGI(TAG, "  Derived: aes=%02x%02x%02x%02x iv=%02x%02x%02x%02x",
+             aes_key[0], aes_key[1], aes_key[2], aes_key[3],
+             iv[0], iv[1], iv[2], iv[3]);
 
     /* Decrypt */
     err = crypto_aes256_cbc_decrypt(aes_key, iv,
@@ -373,9 +429,13 @@ esp_err_t megolm_inbound_decrypt(megolm_inbound_session_t *session,
     crypto_wipe(iv, sizeof(iv));
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Megolm AES decrypt failed");
+        ESP_LOGE(TAG, "Megolm AES decrypt failed at msg_index=%lu, ct_len=%d",
+                 (unsigned long)payload.message_index, (int)payload.ciphertext_len);
         return err;
     }
+
+    ESP_LOGI(TAG, "Megolm decrypt OK: msg_index=%lu, plaintext=%d bytes",
+             (unsigned long)payload.message_index, (int)*plaintext_len);
 
     /* Advance ratchet past this message */
     megolm_ratchet_advance(&session->ratchet);
