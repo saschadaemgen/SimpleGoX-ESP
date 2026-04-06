@@ -1,0 +1,47 @@
+menu "SimpleGoX ESP Configuration"
+
+    config SIMPLEGO_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            WiFi network name to connect to.
+
+    config SIMPLEGO_WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            WiFi network password.
+
+    config SIMPLEGO_MATRIX_HOMESERVER
+        string "Matrix Homeserver URL"
+        default "https://matrix.simplego.dev"
+        help
+            Full URL of the Matrix homeserver including https://.
+
+    config SIMPLEGO_MATRIX_USERNAME
+        string "Matrix Username"
+        default "iot-light"
+        help
+            Matrix username (localpart only, without @).
+
+    config SIMPLEGO_MATRIX_PASSWORD
+        string "Matrix Password"
+        default ""
+        help
+            Matrix account password.
+
+    config SIMPLEGO_MATRIX_ROOM
+        string "Matrix Room"
+        default "#iot:simplego.dev"
+        help
+            Matrix room alias or room ID to join and listen in.
+
+    config SIMPLEGO_RELAY_GPIO
+        int "Relay GPIO Pin"
+        default 43
+        help
+            GPIO pin number connected to the relay module.
+            Default 43 (Grove TX) avoids T-Deck Plus trackball conflict.
+            GPIO 2 is used by the trackball on T-Deck Plus.
+
+endmenu

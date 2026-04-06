@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "MultiEdit",
+      "Write",
+      "Bash(*)"
+    ],
+    "deny": [
+      "Bash(*rm -rf*)",
+      "Bash(*Remove-Item -Recurse -Force /*)",
+      "Bash(*sudo*)",
+      "Bash(*git push*)",
+      "Bash(*git remote*)",
+      "Bash(*del /s /q*)"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+idf_component_register(SRCS
+                            "main.c"
+                            "matrix_client.c"
+                            "matrix_http.c"
+                            "matrix_json.c"
+                            "gpio_control.c"
+                            "nvs_storage.c"
+                       INCLUDE_DIRS
+                            "."
+                       REQUIRES
+                            mjson
+                            esp-tls
+                            esp_http_client
+                            esp_event
+                            esp_netif
+                            esp_wifi
+                            esp_timer
+                            nvs_flash
+                            driver)
