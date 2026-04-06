@@ -4,10 +4,12 @@
 #include "nvs_storage.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "matrix_client";
 
@@ -271,6 +273,112 @@ esp_err_t matrix_client_send_text(matrix_client_t *client,
     return ESP_OK;
 }
 
+esp_err_t matrix_client_register_device(matrix_client_t *client,
+                                         const char *room_id,
+                                         const char *device_id,
+                                         const char *device_type,
+                                         const char *label,
+                                         const char *icon,
+                                         bool online)
+{
+    if (client == NULL || room_id == NULL || device_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char body[256];
+    snprintf(body, sizeof(body),
+        "{\"device_type\":\"%s\",\"label\":\"%s\",\"icon\":\"%s\",\"online\":%s}",
+        device_type ? device_type : "switch",
+        label ? label : device_id,
+        icon ? icon : "device",
+        online ? "true" : "false");
+
+    /* URL-encode room_id and device_id for the path */
+    char encoded_room[MATRIX_ROOM_ID_SIZE * 3];
+    int ei = 0;
+    for (int i = 0; room_id[i] != '\0' && ei < (int)sizeof(encoded_room) - 4; i++) {
+        char c = room_id[i];
+        if (c == '!') { encoded_room[ei++] = '%'; encoded_room[ei++] = '2'; encoded_room[ei++] = '1'; }
+        else if (c == ':') { encoded_room[ei++] = '%'; encoded_room[ei++] = '3'; encoded_room[ei++] = 'A'; }
+        else { encoded_room[ei++] = c; }
+    }
+    encoded_room[ei] = '\0';
+
+    char url[MATRIX_URL_SIZE];
+    snprintf(url, sizeof(url),
+             "%s/_matrix/client/v3/rooms/%s/state/dev.simplego.iot.device/%s",
+             client->homeserver_url, encoded_room, device_id);
+
+    char response_buf[512];
+    int response_len = 0;
+    esp_err_t err = matrix_http_put(&client->http, url, client->access_token, body,
+                                     response_buf, sizeof(response_buf), &response_len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Device registration failed");
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Device '%s' registered in room (online=%s)", device_id, online ? "true" : "false");
+    return ESP_OK;
+}
+
+esp_err_t matrix_client_send_status(matrix_client_t *client,
+                                     const char *room_id,
+                                     const char *device_id,
+                                     bool state,
+                                     float value,
+                                     const char *unit)
+{
+    if (client == NULL || room_id == NULL || device_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int64_t timestamp = esp_timer_get_time() / 1000000;
+
+    char body[256];
+    if (unit != NULL) {
+        /* Sensor value */
+        snprintf(body, sizeof(body),
+            "{\"device_id\":\"%s\",\"state\":null,\"value\":%.1f,\"unit\":\"%s\",\"timestamp\":%lld}",
+            device_id, value, unit, (long long)timestamp);
+    } else {
+        /* Switch state */
+        snprintf(body, sizeof(body),
+            "{\"device_id\":\"%s\",\"state\":%s,\"value\":null,\"timestamp\":%lld}",
+            device_id, state ? "true" : "false", (long long)timestamp);
+    }
+
+    /* URL-encode room_id */
+    char encoded_room[MATRIX_ROOM_ID_SIZE * 3];
+    int ei = 0;
+    for (int i = 0; room_id[i] != '\0' && ei < (int)sizeof(encoded_room) - 4; i++) {
+        char c = room_id[i];
+        if (c == '!') { encoded_room[ei++] = '%'; encoded_room[ei++] = '2'; encoded_room[ei++] = '1'; }
+        else if (c == ':') { encoded_room[ei++] = '%'; encoded_room[ei++] = '3'; encoded_room[ei++] = 'A'; }
+        else { encoded_room[ei++] = c; }
+    }
+    encoded_room[ei] = '\0';
+
+    client->txn_counter++;
+
+    char url[MATRIX_URL_SIZE];
+    snprintf(url, sizeof(url),
+             "%s/_matrix/client/v3/rooms/%s/send/dev.simplego.iot.status/%" PRIu32,
+             client->homeserver_url, encoded_room, client->txn_counter);
+
+    char response_buf[512];
+    int response_len = 0;
+    esp_err_t err = matrix_http_put(&client->http, url, client->access_token, body,
+                                     response_buf, sizeof(response_buf), &response_len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Status update failed");
+        return err;
+    }
+
+    ESP_LOGD(TAG, "Status update sent for '%s'", device_id);
+    return ESP_OK;
+}
+
 /*
  * URL-encode a string into a destination buffer.
  * Encodes all characters that are not unreserved per RFC 3986.
@@ -312,36 +420,48 @@ esp_err_t matrix_client_sync(matrix_client_t *client,
     ESP_LOGI(TAG, "Sync starting, since=%s",
              client->sync_next_batch[0] ? client->sync_next_batch : "(initial)");
 
-    /* Build URL: start with base sync endpoint */
-    char url[MATRIX_URL_SIZE * 2];
-    int pos = snprintf(url, sizeof(url),
+    /* Build URL on heap (avoid ~4 KB stack usage) */
+    size_t url_buf_size = MATRIX_URL_SIZE * 2;
+    char *url = malloc(url_buf_size);
+    if (url == NULL) { return ESP_ERR_NO_MEM; }
+
+    int pos = snprintf(url, url_buf_size,
                        "%s/_matrix/client/v3/sync?timeout=%d",
                        client->homeserver_url, timeout_ms);
 
     /* Append since token if we have one */
     if (client->sync_next_batch[0] != '\0') {
-        char encoded_token[MATRIX_SYNC_TOKEN_SIZE * 3];
-        url_encode(client->sync_next_batch, encoded_token, sizeof(encoded_token));
-        pos += snprintf(url + pos, sizeof(url) - pos, "&since=%s", encoded_token);
+        char *encoded_token = malloc(MATRIX_SYNC_TOKEN_SIZE * 3);
+        if (encoded_token != NULL) {
+            url_encode(client->sync_next_batch, encoded_token, MATRIX_SYNC_TOKEN_SIZE * 3);
+            pos += snprintf(url + pos, url_buf_size - pos, "&since=%s", encoded_token);
+            free(encoded_token);
+        }
     }
 
     /* Append sync filter if we have a room to filter on */
     if (client->room_id[0] != '\0') {
-        char filter[512];
-        int filter_len = matrix_json_build_sync_filter(filter, sizeof(filter),
-                                                        client->room_id);
-        if (filter_len > 0) {
-            char encoded_filter[1024];
-            if (url_encode(filter, encoded_filter, sizeof(encoded_filter)) > 0) {
-                pos += snprintf(url + pos, sizeof(url) - pos,
-                                "&filter=%s", encoded_filter);
+        char *filter = malloc(512);
+        if (filter != NULL) {
+            int filter_len = matrix_json_build_sync_filter(filter, 512, client->room_id);
+            if (filter_len > 0) {
+                char *encoded_filter = malloc(1536);
+                if (encoded_filter != NULL) {
+                    if (url_encode(filter, encoded_filter, 1536) > 0) {
+                        pos += snprintf(url + pos, url_buf_size - pos,
+                                        "&filter=%s", encoded_filter);
+                    }
+                    free(encoded_filter);
+                }
             }
+            free(filter);
         }
     }
 
     char *response_buf = malloc(MATRIX_RESPONSE_BUF_SIZE);
     if (response_buf == NULL) {
         ESP_LOGE(TAG, "Failed to allocate sync response buffer");
+        free(url);
         return ESP_ERR_NO_MEM;
     }
 
@@ -349,6 +469,9 @@ esp_err_t matrix_client_sync(matrix_client_t *client,
     esp_err_t err = matrix_http_get(&client->http, url, client->access_token,
                                      response_buf, MATRIX_RESPONSE_BUF_SIZE,
                                      &response_len);
+    free(url);
+    url = NULL;
+
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Sync request failed: %s", esp_err_to_name(err));
         free(response_buf);

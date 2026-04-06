@@ -82,3 +82,58 @@ esp_err_t nvs_storage_load_string(const char *key, char *value, size_t max_len)
     nvs_close(handle);
     return err;
 }
+
+esp_err_t nvs_storage_save_blob(const char *key, const void *data, size_t len)
+{
+    if (key == NULL || data == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_blob(handle, key, data, len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write blob '%s': %s", key, esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    err = nvs_commit(handle);
+    nvs_close(handle);
+
+    ESP_LOGD(TAG, "Saved blob '%s' (%d bytes)", key, (int)len);
+    return err;
+}
+
+esp_err_t nvs_storage_load_blob(const char *key, void *data, size_t max_len, size_t *actual_len)
+{
+    if (key == NULL || data == NULL || actual_len == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        *actual_len = 0;
+        return err;
+    }
+
+    *actual_len = max_len;
+    err = nvs_get_blob(handle, key, data, actual_len);
+    if (err != ESP_OK) {
+        *actual_len = 0;
+        if (err != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGE(TAG, "Failed to read blob '%s': %s", key, esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGD(TAG, "Loaded blob '%s' (%d bytes)", key, (int)*actual_len);
+    }
+
+    nvs_close(handle);
+    return err;
+}

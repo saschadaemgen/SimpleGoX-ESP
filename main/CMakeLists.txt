@@ -5,8 +5,16 @@ idf_component_register(SRCS
                             "matrix_json.c"
                             "gpio_control.c"
                             "nvs_storage.c"
+                            "crypto/crypto_utils.c"
+                            "crypto/olm_message.c"
+                            "crypto/megolm_message.c"
+                            "crypto/olm_account.c"
+                            "crypto/olm_session.c"
+                            "crypto/megolm_session.c"
+                            "crypto/matrix_e2ee.c"
                        INCLUDE_DIRS
                             "."
+                            "crypto"
                        REQUIRES
                             mjson
                             esp-tls
@@ -16,4 +24,5 @@ idf_component_register(SRCS
                             esp_wifi
                             esp_timer
                             nvs_flash
-                            driver)
+                            driver
+                            mbedtls)

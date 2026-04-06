@@ -44,4 +44,30 @@ menu "SimpleGoX ESP Configuration"
             Default 43 (Grove TX) avoids T-Deck Plus trackball conflict.
             GPIO 2 is used by the trackball on T-Deck Plus.
 
+    config SIMPLEGO_IOT_DEVICE_ID
+        string "IoT Device ID"
+        default "light-kitchen"
+        help
+            Unique device identifier. Format: type-location (e.g.
+            light-kitchen, temp-bedroom, doorbell-front).
+
+    config SIMPLEGO_IOT_DEVICE_TYPE
+        string "IoT Device Type"
+        default "switch"
+        help
+            Device type: switch, sensor, button, dimmer.
+
+    config SIMPLEGO_IOT_DEVICE_LABEL
+        string "IoT Device Label"
+        default "Kitchen Light"
+        help
+            Human-readable name shown in the SimpleGoX UI.
+
+    config SIMPLEGO_IOT_DEVICE_ICON
+        string "IoT Device Icon"
+        default "lightbulb"
+        help
+            Icon name: lightbulb, thermometer, humidity, doorbell,
+            dimmer, fan, lock, camera, device.
+
 endmenu
