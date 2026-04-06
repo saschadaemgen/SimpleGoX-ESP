@@ -13,7 +13,6 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 
-#include "nvs_flash.h"
 #include "nvs_storage.h"
 #include "matrix_client.h"
 #include "gpio_control.h"
@@ -382,9 +381,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Device: %s (%s)", CONFIG_SIMPLEGO_IOT_DEVICE_ID,
              CONFIG_SIMPLEGO_IOT_DEVICE_LABEL);
 
-    /* NVS init - one-time erase to clear stale Olm session state */
-    /* TODO: remove this nvs_flash_erase() after first successful boot */
-    nvs_flash_erase();
+    /* NVS init */
     ESP_ERROR_CHECK(nvs_storage_init());
 
     /* WiFi connect (blocking) */
@@ -482,7 +479,7 @@ void app_main(void)
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     /* Start sync task (24 KB stack for TLS + crypto + buffers) */
-    xTaskCreate(sync_task, "sync_task", 32768, NULL, 5, NULL);
+    xTaskCreate(sync_task, "sync_task", 49152, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Setup complete, sync task running");
 }
