@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "matrix_http.h"
 
 #define MATRIX_ACCESS_TOKEN_SIZE  256
 #define MATRIX_DEVICE_ID_SIZE      64
@@ -37,6 +38,7 @@ typedef struct matrix_client {
     char sync_next_batch[MATRIX_SYNC_TOKEN_SIZE];
     char room_id[MATRIX_ROOM_ID_SIZE];
     uint32_t txn_counter;
+    matrix_http_t http;
 } matrix_client_t;
 
 /* Client lifecycle */

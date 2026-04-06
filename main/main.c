@@ -10,6 +10,7 @@
 #include "esp_wifi.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 
 #include "nvs_storage.h"
 #include "matrix_client.h"
@@ -111,9 +112,12 @@ static void sync_task(void *arg)
     matrix_sync_response_t response;
 
     ESP_LOGI(TAG, "Sync task started");
+    ESP_LOGI(TAG, "Free heap in sync task: %lu, largest block: %lu",
+             (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     while (1) {
-        esp_err_t err = matrix_client_sync(&g_client, &response, 30000);
+        esp_err_t err = matrix_client_sync(&g_client, &response, 0);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Sync failed, retrying in 5s...");
             vTaskDelay(pdMS_TO_TICKS(5000));
@@ -164,6 +168,9 @@ static void sync_task(void *arg)
 
         /* Persist sync token */
         matrix_client_save_sync_token(&g_client);
+
+        /* Simple polling: wait 5 seconds before next sync */
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
@@ -217,8 +224,13 @@ void app_main(void)
     /* GPIO init */
     ESP_ERROR_CHECK(gpio_control_init(g_relay_pin));
 
-    /* Start sync task */
-    xTaskCreate(sync_task, "sync_task", 8192, NULL, 5, NULL);
+    /* Heap diagnostics before sync task */
+    ESP_LOGI(TAG, "Free heap: %lu, largest block: %lu",
+             (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+    /* Start sync task (16 KB stack for TLS + buffers) */
+    xTaskCreate(sync_task, "sync_task", 16384, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Setup complete, sync task running");
 }

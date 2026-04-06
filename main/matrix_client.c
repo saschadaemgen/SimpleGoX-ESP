@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "esp_log.h"
 
 static const char *TAG = "matrix_client";
@@ -20,6 +21,13 @@ esp_err_t matrix_client_init(matrix_client_t *client, const char *homeserver)
     snprintf(client->homeserver_url, MATRIX_HOMESERVER_SIZE, "%s", homeserver);
     client->txn_counter = 0;
 
+    /* Create persistent HTTP client (one TLS session, reused) */
+    esp_err_t err = matrix_http_init(&client->http, homeserver);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to init HTTP client");
+        return err;
+    }
+
     ESP_LOGI(TAG, "Client initialized for %s", homeserver);
     return ESP_OK;
 }
@@ -29,6 +37,7 @@ void matrix_client_free(matrix_client_t *client)
     if (client == NULL) {
         return;
     }
+    matrix_http_cleanup(&client->http);
     memset(client, 0, sizeof(matrix_client_t));
 }
 
@@ -54,7 +63,7 @@ esp_err_t matrix_client_login(matrix_client_t *client,
 
     char response_buf[2048];
     int response_len = 0;
-    esp_err_t err = matrix_http_post(url, NULL, request_buf,
+    esp_err_t err = matrix_http_post(&client->http, url, NULL, request_buf,
                                       response_buf, sizeof(response_buf),
                                       &response_len);
     if (err != ESP_OK) {
@@ -93,7 +102,7 @@ esp_err_t matrix_client_logout(matrix_client_t *client)
 
     char response_buf[512];
     int response_len = 0;
-    esp_err_t err = matrix_http_post(url, client->access_token, "{}",
+    esp_err_t err = matrix_http_post(&client->http, url, client->access_token, "{}",
                                       response_buf, sizeof(response_buf),
                                       &response_len);
     if (err != ESP_OK) {
@@ -139,7 +148,7 @@ esp_err_t matrix_client_join_room(matrix_client_t *client,
 
     char response_buf[1024];
     int response_len = 0;
-    esp_err_t err = matrix_http_post(url, client->access_token, "{}",
+    esp_err_t err = matrix_http_post(&client->http, url, client->access_token, "{}",
                                       response_buf, sizeof(response_buf),
                                       &response_len);
     if (err != ESP_OK) {
@@ -191,7 +200,7 @@ esp_err_t matrix_client_resolve_alias(matrix_client_t *client,
 
     char response_buf[1024];
     int response_len = 0;
-    esp_err_t err = matrix_http_get(url, client->access_token,
+    esp_err_t err = matrix_http_get(&client->http, url, client->access_token,
                                      response_buf, sizeof(response_buf),
                                      &response_len);
     if (err != ESP_OK) {
@@ -250,7 +259,7 @@ esp_err_t matrix_client_send_text(matrix_client_t *client,
 
     char response_buf[512];
     int response_len = 0;
-    esp_err_t err = matrix_http_put(url, client->access_token, body,
+    esp_err_t err = matrix_http_put(&client->http, url, client->access_token, body,
                                      response_buf, sizeof(response_buf),
                                      &response_len);
     if (err != ESP_OK) {
@@ -260,6 +269,34 @@ esp_err_t matrix_client_send_text(matrix_client_t *client,
 
     ESP_LOGD(TAG, "Message sent to %s", room_id);
     return ESP_OK;
+}
+
+/*
+ * URL-encode a string into a destination buffer.
+ * Encodes all characters that are not unreserved per RFC 3986.
+ * Returns the number of bytes written (excluding null terminator), or -1 on overflow.
+ */
+static int url_encode(const char *src, char *dst, size_t dst_size)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    int pos = 0;
+
+    for (int i = 0; src[i] != '\0'; i++) {
+        unsigned char c = (unsigned char)src[i];
+        /* Unreserved characters per RFC 3986 */
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+            if (pos >= (int)dst_size - 1) { return -1; }
+            dst[pos++] = c;
+        } else {
+            if (pos >= (int)dst_size - 3) { return -1; }
+            dst[pos++] = '%';
+            dst[pos++] = hex[c >> 4];
+            dst[pos++] = hex[c & 0x0F];
+        }
+    }
+    dst[pos] = '\0';
+    return pos;
 }
 
 esp_err_t matrix_client_sync(matrix_client_t *client,
@@ -272,51 +309,34 @@ esp_err_t matrix_client_sync(matrix_client_t *client,
 
     memset(response, 0, sizeof(matrix_sync_response_t));
 
-    /* Build sync filter */
-    char filter[512];
-    int filter_len = matrix_json_build_sync_filter(filter, sizeof(filter),
-                                                    client->room_id);
+    ESP_LOGI(TAG, "Sync starting, since=%s",
+             client->sync_next_batch[0] ? client->sync_next_batch : "(initial)");
 
-    /* Build URL with query parameters */
+    /* Build URL: start with base sync endpoint */
     char url[MATRIX_URL_SIZE * 2];
-    int url_len;
+    int pos = snprintf(url, sizeof(url),
+                       "%s/_matrix/client/v3/sync?timeout=%d",
+                       client->homeserver_url, timeout_ms);
 
-    if (strlen(client->sync_next_batch) > 0) {
-        url_len = snprintf(url, sizeof(url),
-                           "%s/_matrix/client/v3/sync?timeout=%d&since=",
-                           client->homeserver_url, timeout_ms);
-
-        /* URL-encode the since token */
-        for (int i = 0; client->sync_next_batch[i] != '\0' && url_len < (int)sizeof(url) - 4; i++) {
-            char c = client->sync_next_batch[i];
-            if (c == '~') {
-                url[url_len++] = '%'; url[url_len++] = '7'; url[url_len++] = 'E';
-            } else {
-                url[url_len++] = c;
-            }
-        }
-        url[url_len] = '\0';
-    } else {
-        url_len = snprintf(url, sizeof(url),
-                           "%s/_matrix/client/v3/sync?timeout=%d",
-                           client->homeserver_url, timeout_ms);
+    /* Append since token if we have one */
+    if (client->sync_next_batch[0] != '\0') {
+        char encoded_token[MATRIX_SYNC_TOKEN_SIZE * 3];
+        url_encode(client->sync_next_batch, encoded_token, sizeof(encoded_token));
+        pos += snprintf(url + pos, sizeof(url) - pos, "&since=%s", encoded_token);
     }
 
-    /* Append filter if we have a room to filter on */
-    if (filter_len > 0 && strlen(client->room_id) > 0) {
-        /* URL-encode the filter */
-        int pos = strlen(url);
-        pos += snprintf(url + pos, sizeof(url) - pos, "&filter=");
-        for (int i = 0; i < filter_len && pos < (int)sizeof(url) - 4; i++) {
-            char c = filter[i];
-            if (c == '{' || c == '}' || c == '"' || c == '[' || c == ']'
-                || c == ':' || c == ',') {
-                pos += snprintf(url + pos, sizeof(url) - pos, "%%%02X", (unsigned char)c);
-            } else {
-                url[pos++] = c;
+    /* Append sync filter if we have a room to filter on */
+    if (client->room_id[0] != '\0') {
+        char filter[512];
+        int filter_len = matrix_json_build_sync_filter(filter, sizeof(filter),
+                                                        client->room_id);
+        if (filter_len > 0) {
+            char encoded_filter[1024];
+            if (url_encode(filter, encoded_filter, sizeof(encoded_filter)) > 0) {
+                pos += snprintf(url + pos, sizeof(url) - pos,
+                                "&filter=%s", encoded_filter);
             }
         }
-        url[pos] = '\0';
     }
 
     char *response_buf = malloc(MATRIX_RESPONSE_BUF_SIZE);
@@ -326,14 +346,16 @@ esp_err_t matrix_client_sync(matrix_client_t *client,
     }
 
     int response_len = 0;
-    esp_err_t err = matrix_http_get(url, client->access_token,
+    esp_err_t err = matrix_http_get(&client->http, url, client->access_token,
                                      response_buf, MATRIX_RESPONSE_BUF_SIZE,
                                      &response_len);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Sync request failed");
+        ESP_LOGE(TAG, "Sync request failed: %s", esp_err_to_name(err));
         free(response_buf);
         return err;
     }
+
+    ESP_LOGI(TAG, "Sync response: %d bytes", response_len);
 
     /* Parse the sync response */
     err = matrix_json_parse_sync(response_buf, response_len, response);
@@ -350,7 +372,8 @@ esp_err_t matrix_client_sync(matrix_client_t *client,
     }
 
     free(response_buf);
-    ESP_LOGD(TAG, "Sync complete, %d messages", response->message_count);
+    ESP_LOGI(TAG, "Sync ok: next_batch=%s, %d messages",
+             response->next_batch, response->message_count);
     return ESP_OK;
 }
 
