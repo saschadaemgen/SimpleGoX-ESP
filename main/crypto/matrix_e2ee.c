@@ -116,15 +116,17 @@ esp_err_t matrix_e2ee_save_account(matrix_e2ee_t *e2ee)
 static void delete_old_devices(matrix_client_t *client)
 {
     /* Query our own devices first */
-    char url[512];
-    snprintf(url, sizeof(url), "%s/_matrix/client/v3/devices", client->homeserver_url);
+    char *url = malloc(512);
+    if (url == NULL) { return; }
+    snprintf(url, 512, "%s/_matrix/client/v3/devices", client->homeserver_url);
 
     char *resp = malloc(4096);
-    if (resp == NULL) { return; }
+    if (resp == NULL) { free(url); return; }
 
     int resp_len = 0;
     esp_err_t err = matrix_http_get(&client->http, url, client->access_token,
                                      resp, 4096, &resp_len);
+    free(url);
     if (err != ESP_OK) {
         free(resp);
         return;
@@ -165,13 +167,16 @@ static void delete_old_devices(matrix_client_t *client)
 
     pos += snprintf(del_body + pos, 2048 - pos, "]}");
 
-    snprintf(url, sizeof(url), "%s/_matrix/client/v3/delete_devices", client->homeserver_url);
+    url = malloc(512);
+    if (url == NULL) { free(del_body); return; }
+    snprintf(url, 512, "%s/_matrix/client/v3/delete_devices", client->homeserver_url);
 
-    char del_resp[512];
+    char del_resp[256];
     int del_resp_len = 0;
     err = matrix_http_post(&client->http, url, client->access_token,
                             del_body, del_resp, sizeof(del_resp), &del_resp_len);
     free(del_body);
+    free(url);
 
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Old devices deleted successfully");
@@ -291,21 +296,25 @@ esp_err_t matrix_e2ee_upload_keys(matrix_e2ee_t *e2ee, matrix_client_t *client)
     pos += snprintf(body + pos, 4096 - pos, "}}");
 
     /* POST to /_matrix/client/v3/keys/upload */
-    char url[1024];
-    snprintf(url, sizeof(url), "%s/_matrix/client/v3/keys/upload", client->homeserver_url);
+    char *url = malloc(512);
+    char *response = malloc(1024);
+    if (url == NULL || response == NULL) { free(body); free(url); free(response); return ESP_ERR_NO_MEM; }
+    snprintf(url, 512, "%s/_matrix/client/v3/keys/upload", client->homeserver_url);
 
-    char response[1024];
     int response_len = 0;
     esp_err_t err = matrix_http_post(&client->http, url, client->access_token, body,
-                                      response, sizeof(response), &response_len);
+                                      response, 1024, &response_len);
+    free(url); url = NULL;
     free(body);
 
     if (err != ESP_OK) {
+        free(response);
         ESP_LOGE(TAG, "keys/upload failed");
         return err;
     }
 
     ESP_LOGI(TAG, "keys/upload response: %.200s", response);
+    free(response); response = NULL;
 
     olm_account_mark_keys_as_published(&e2ee->account);
     matrix_e2ee_save_account(e2ee);
@@ -363,19 +372,21 @@ esp_err_t matrix_e2ee_query_keys(matrix_e2ee_t *e2ee, matrix_client_t *client,
         return ESP_ERR_INVALID_ARG;
     }
 
-    char body[256];
-    snprintf(body, sizeof(body),
-             "{\"device_keys\":{\"%s\":[]}}", user_id);
+    char *body = malloc(256);
+    char *url = malloc(512);
+    if (body == NULL || url == NULL) { free(body); free(url); return ESP_ERR_NO_MEM; }
 
-    char url[1024];
-    snprintf(url, sizeof(url), "%s/_matrix/client/v3/keys/query", client->homeserver_url);
+    snprintf(body, 256, "{\"device_keys\":{\"%s\":[]}}", user_id);
+    snprintf(url, 512, "%s/_matrix/client/v3/keys/query", client->homeserver_url);
 
     char *response = malloc(8192);
-    if (response == NULL) { return ESP_ERR_NO_MEM; }
+    if (response == NULL) { free(body); free(url); return ESP_ERR_NO_MEM; }
 
     int response_len = 0;
     esp_err_t err = matrix_http_post(&client->http, url, client->access_token, body,
                                       response, 8192, &response_len);
+    free(body); body = NULL;
+    free(url); url = NULL;
     if (err != ESP_OK) {
         free(response);
         ESP_LOGE(TAG, "keys/query failed");
@@ -436,7 +447,7 @@ esp_err_t matrix_e2ee_query_keys(matrix_e2ee_t *e2ee, matrix_client_t *client,
 
     while ((off = mjson_next(devices_json, devices_json_len, off,
                               &koff, &klen, &voff, &vlen, &vtype)) != 0) {
-        if (e2ee->room_device_count >= 10) { break; }
+        if (e2ee->room_device_count >= E2EE_MAX_ROOM_DEVICES) { break; }
 
         const char *dev_json = devices_json + voff;
         int dev_json_len = vlen;
@@ -490,20 +501,23 @@ static esp_err_t claim_and_create_olm_session(matrix_e2ee_t *e2ee,
     }
 
     /* POST keys/claim */
-    char body[256];
-    snprintf(body, sizeof(body),
+    char *body = malloc(256);
+    char *url = malloc(512);
+    if (body == NULL || url == NULL) { free(body); free(url); return ESP_ERR_NO_MEM; }
+
+    snprintf(body, 256,
              "{\"one_time_keys\":{\"%s\":{\"%s\":\"signed_curve25519\"}}}",
              device->user_id, device->device_id);
-
-    char url[1024];
-    snprintf(url, sizeof(url), "%s/_matrix/client/v3/keys/claim", client->homeserver_url);
+    snprintf(url, 512, "%s/_matrix/client/v3/keys/claim", client->homeserver_url);
 
     char *response = malloc(2048);
-    if (response == NULL) { return ESP_ERR_NO_MEM; }
+    if (response == NULL) { free(body); free(url); return ESP_ERR_NO_MEM; }
 
     int response_len = 0;
     esp_err_t err = matrix_http_post(&client->http, url, client->access_token, body,
                                       response, 2048, &response_len);
+    free(body); body = NULL;
+    free(url); url = NULL;
     if (err != ESP_OK) {
         free(response);
         return err;
@@ -633,8 +647,9 @@ esp_err_t matrix_e2ee_ensure_outbound_session(matrix_e2ee_t *e2ee,
         char sk_b64[320];
         crypto_base64_encode(session_key, sk_len, sk_b64, sizeof(sk_b64));
 
-        char room_key_json[1024];
-        snprintf(room_key_json, sizeof(room_key_json),
+        char *room_key_json = malloc(1024);
+        if (room_key_json == NULL) { return ESP_ERR_NO_MEM; }
+        snprintf(room_key_json, 1024,
             "{\"type\":\"m.room_key\",\"content\":{"
                 "\"algorithm\":\"m.megolm.v1.aes-sha2\","
                 "\"room_id\":\"%s\","
@@ -646,9 +661,16 @@ esp_err_t matrix_e2ee_ensure_outbound_session(matrix_e2ee_t *e2ee,
             e2ee->outbound_megolm.session_id_b64,
             sk_b64);
 
+        ESP_LOGI(TAG, "Sharing Megolm session %s with %d devices",
+                 e2ee->outbound_megolm.session_id_b64, e2ee->room_device_count);
+
         /* For each device: ensure Olm session, encrypt, send via to-device */
+        int shared_count = 0;
         for (int d = 0; d < e2ee->room_device_count; d++) {
             e2ee_device_info_t *dev = &e2ee->room_devices[d];
+
+            ESP_LOGI(TAG, "Sharing with [%d/%d] %s:%s",
+                     d + 1, e2ee->room_device_count, dev->user_id, dev->device_id);
 
             /* Find or create Olm session */
             int olm_idx = -1;
@@ -661,8 +683,17 @@ esp_err_t matrix_e2ee_ensure_outbound_session(matrix_e2ee_t *e2ee,
             }
 
             if (olm_idx < 0) {
+                if (e2ee->olm_session_count >= E2EE_MAX_OLM_SESSIONS) {
+                    ESP_LOGW(TAG, "  Olm session limit (%d) reached, skipping %s",
+                             E2EE_MAX_OLM_SESSIONS, dev->device_id);
+                    continue;
+                }
                 err = claim_and_create_olm_session(e2ee, client, dev);
-                if (err != ESP_OK) { continue; }
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "  Failed to create Olm session for %s: %s",
+                             dev->device_id, esp_err_to_name(err));
+                    continue;
+                }
                 olm_idx = e2ee->olm_session_count - 1;
             }
 
@@ -749,10 +780,14 @@ esp_err_t matrix_e2ee_ensure_outbound_session(matrix_e2ee_t *e2ee,
             free(td_url);
             free(td_body);
 
-            ESP_LOGI(TAG, "Shared Megolm session with %s:%s",
+            shared_count++;
+            ESP_LOGI(TAG, "  Shared Megolm session with %s:%s",
                      dev->user_id, dev->device_id);
         }
 
+        free(room_key_json);
+        ESP_LOGI(TAG, "Megolm session shared with %d/%d devices",
+                 shared_count, e2ee->room_device_count);
         e2ee->outbound_megolm_shared = true;
     }
 
@@ -817,6 +852,9 @@ esp_err_t matrix_e2ee_send_event(matrix_e2ee_t *e2ee, matrix_client_t *client,
     char *body = malloc(body_size);
     if (body == NULL) { free(ct_b64); return ESP_ERR_NO_MEM; }
 
+    ESP_LOGI(TAG, "Outbound encrypted event: session_id=%s, ct_b64_len=%d",
+             e2ee->outbound_megolm.session_id_b64, (int)strlen(ct_b64));
+
     snprintf(body, body_size,
         "{"
             "\"algorithm\":\"m.megolm.v1.aes-sha2\","
@@ -846,16 +884,19 @@ esp_err_t matrix_e2ee_send_event(matrix_e2ee_t *e2ee, matrix_client_t *client,
     encoded_room[ei] = '\0';
 
     client->txn_counter++;
-    char url[1024];
-    snprintf(url, sizeof(url),
+    char *url = malloc(1024);
+    char *response = malloc(512);
+    if (url == NULL || response == NULL) { free(body); free(url); free(response); return ESP_ERR_NO_MEM; }
+    snprintf(url, 1024,
              "%s/_matrix/client/v3/rooms/%s/send/m.room.encrypted/%" PRIu32,
              client->homeserver_url, encoded_room, client->txn_counter);
 
-    char response[512];
     int response_len = 0;
     err = matrix_http_put(&client->http, url, client->access_token, body,
-                           response, sizeof(response), &response_len);
+                           response, 512, &response_len);
     free(body);
+    free(url);
+    free(response);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to send encrypted event");
@@ -1060,39 +1101,7 @@ esp_err_t matrix_e2ee_handle_to_device(matrix_e2ee_t *e2ee,
         return ESP_FAIL;
     }
 
-    /* === KEY DUMP FOR PYTHON VERIFICATION === */
-    ESP_LOGW(TAG, "=== OLM DECRYPT DEBUG DUMP ===");
-    ESP_LOGW(TAG, "CT_B64_START>>%s<<CT_B64_END", ct_b64);
-    ESP_LOGW(TAG, "MSG_TYPE=%d", msg_type);
-    {
-        char id_priv_hex[65], otk_dump[512];
-        for (int j = 0; j < 32; j++) {
-            snprintf(id_priv_hex + j*2, 3, "%02x",
-                     e2ee->account.identity.curve25519_private[j]);
-        }
-        ESP_LOGW(TAG, "OUR_CURVE25519_PRIVATE=%s", id_priv_hex);
-
-        char id_pub_b64[48];
-        crypto_base64_encode(e2ee->account.identity.curve25519_public, 32,
-                              id_pub_b64, sizeof(id_pub_b64));
-        ESP_LOGW(TAG, "OUR_CURVE25519_PUBLIC=%s", id_pub_b64);
-
-        /* Dump all unpublished OTKs */
-        for (int j = 0; j < OLM_MAX_ONE_TIME_KEYS; j++) {
-            olm_one_time_key_t *otk = &e2ee->account.one_time_keys[j];
-            if (otk->key_id == 0) continue;
-            char pub_b64[48], priv_hex[65];
-            crypto_base64_encode(otk->public_key, 32, pub_b64, sizeof(pub_b64));
-            for (int k = 0; k < 32; k++) {
-                snprintf(priv_hex + k*2, 3, "%02x", otk->private_key[k]);
-            }
-            ESP_LOGW(TAG, "OTK[%d] id=%lu pub=%s priv=%s %s%s",
-                     j, (unsigned long)otk->key_id, pub_b64, priv_hex,
-                     otk->published ? "pub" : "unpub",
-                     otk->used ? " USED" : "");
-        }
-    }
-    ESP_LOGW(TAG, "=== END DEBUG DUMP ===");
+    ESP_LOGI(TAG, "Olm to-device: type=%d, ct_b64_len=%d", msg_type, (int)strlen(ct_b64));
 
     /* Decode ciphertext */
     uint8_t *ct = malloc(4096);

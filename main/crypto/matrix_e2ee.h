@@ -11,7 +11,8 @@
 #include "megolm_session.h"
 
 #define E2EE_MAX_INBOUND_SESSIONS 5
-#define E2EE_MAX_OLM_SESSIONS 5
+#define E2EE_MAX_OLM_SESSIONS 16
+#define E2EE_MAX_ROOM_DEVICES 16
 
 typedef struct {
     char user_id[128];
@@ -38,7 +39,7 @@ typedef struct matrix_e2ee {
     int inbound_megolm_count;
 
     /* Known devices in the room */
-    e2ee_device_info_t room_devices[10];
+    e2ee_device_info_t room_devices[E2EE_MAX_ROOM_DEVICES];
     int room_device_count;
 
     bool keys_uploaded;
