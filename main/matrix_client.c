@@ -21,7 +21,8 @@ esp_err_t matrix_client_init(matrix_client_t *client, const char *homeserver)
 
     memset(client, 0, sizeof(matrix_client_t));
     snprintf(client->homeserver_url, MATRIX_HOMESERVER_SIZE, "%s", homeserver);
-    client->txn_counter = 0;
+    /* Start txn counter from uptime microseconds to avoid collisions across reboots */
+    client->txn_counter = (uint32_t)(esp_timer_get_time() / 1000);
 
     /* Create persistent HTTP client (one TLS session, reused) */
     esp_err_t err = matrix_http_init(&client->http, homeserver);
