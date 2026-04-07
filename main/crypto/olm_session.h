@@ -21,6 +21,7 @@ typedef struct {
     uint8_t their_identity_key[32];
     bool initialized;
     bool received_message;
+    bool is_outbound; /* true = we initiated (Alice), false = they initiated (Bob) */
 } olm_session_t;
 
 /*

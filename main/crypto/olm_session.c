@@ -135,6 +135,7 @@ esp_err_t olm_session_create_outbound(olm_session_t *session,
 
     session->initialized = true;
     session->received_message = false;
+    session->is_outbound = true;
 
     ESP_LOGI(TAG, "Outbound Olm session created");
     return ESP_OK;
@@ -235,6 +236,7 @@ esp_err_t olm_session_create_inbound(olm_session_t *session,
     session->sending_chain.index = 0;
     session->initialized = true;
     session->received_message = false; /* First message not yet received */
+    session->is_outbound = false;
 
     ESP_LOGI(TAG, "Inbound Olm session created");
     ESP_LOGI(TAG, "  recv_chain[0..3]=%02x%02x%02x%02x (from 3DH, for their first msg)",
@@ -374,16 +376,18 @@ esp_err_t olm_session_decrypt(olm_session_t *session, int msg_type,
      * is the sender's current key for FUTURE DH ratchet steps, not for this
      * message. We store it for later use. */
     bool ratchet_changed = memcmp(inner.ratchet_key, session->their_ratchet_key, 32) != 0;
-    bool first_message = !session->received_message;
-    ESP_LOGI(TAG, "olm_decrypt: ratchet_changed=%d, first_msg=%d, recv_chain_index=%lu",
-             ratchet_changed, first_message, (unsigned long)session->receiving_chain.index);
+    bool first_inbound_msg = !session->received_message && !session->is_outbound;
+    ESP_LOGI(TAG, "olm_decrypt: ratchet_changed=%d, first_inbound=%d, outbound=%d, recv_idx=%lu",
+             ratchet_changed, first_inbound_msg, session->is_outbound,
+             (unsigned long)session->receiving_chain.index);
 
-    if (first_message) {
-        /* First message: use the 3DH-derived receiving chain directly.
+    if (first_inbound_msg) {
+        /* First message on an INBOUND session: use the 3DH-derived
+         * receiving chain directly (sender used the 3DH sending chain).
          * Save the sender's ratchet key for future DH ratchet steps. */
         memcpy(session->their_ratchet_key, inner.ratchet_key, 32);
         session->received_message = true;
-        ESP_LOGI(TAG, "olm_decrypt: first message, using 3DH recv_chain directly");
+        ESP_LOGI(TAG, "olm_decrypt: first inbound msg, using 3DH recv_chain");
     } else if (ratchet_changed) {
         /* New ratchet key: advance root ratchet */
         memcpy(session->their_ratchet_key, inner.ratchet_key, 32);
