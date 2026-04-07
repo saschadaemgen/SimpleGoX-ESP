@@ -11,7 +11,7 @@
 #include "megolm_session.h"
 
 #define E2EE_MAX_INBOUND_SESSIONS 5
-#define E2EE_MAX_OLM_SESSIONS 16
+#define E2EE_MAX_OLM_SESSIONS 32
 #define E2EE_MAX_ROOM_DEVICES 16
 
 typedef struct {
@@ -20,6 +20,7 @@ typedef struct {
     char curve25519_b64[48];
     char ed25519_b64[48];
     uint8_t curve25519_key[32];
+    uint8_t claimed_otk[32]; /* OTK public key claimed from this device */
 } e2ee_device_info_t;
 
 typedef struct matrix_e2ee {
@@ -44,6 +45,7 @@ typedef struct matrix_e2ee {
 
     bool keys_uploaded;
     bool initialized;
+    int last_known_otk_count; /* cached from last keys/upload response */
 } matrix_e2ee_t;
 
 /* Initialize E2EE: create or load Olm account from NVS */
@@ -54,6 +56,10 @@ esp_err_t matrix_e2ee_save_account(matrix_e2ee_t *e2ee);
 
 /* Upload device keys + one-time keys to homeserver */
 esp_err_t matrix_e2ee_upload_keys(matrix_e2ee_t *e2ee, matrix_client_t *client);
+
+/* Check OTK count and replenish if needed */
+esp_err_t matrix_e2ee_replenish_otks(matrix_e2ee_t *e2ee, matrix_client_t *client,
+                                      int server_otk_count);
 
 /* Query device keys for a user */
 esp_err_t matrix_e2ee_query_keys(matrix_e2ee_t *e2ee, matrix_client_t *client,
