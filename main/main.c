@@ -365,11 +365,16 @@ static void sync_task(void *arg)
             response.to_device_events[i].content_json = NULL;
         }
 
+        /* Replenish OTKs if server count is low */
+        if (g_e2ee_active && response.otk_count >= 0 && response.otk_count < 5) {
+            matrix_e2ee_replenish_otks(&g_e2ee, &g_client, response.otk_count);
+        }
+
         /* Persist sync token */
         matrix_client_save_sync_token(&g_client);
 
-        /* Simple polling: wait 5 seconds before next sync */
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        /* Simple polling: wait 1 second before next sync */
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -449,11 +454,11 @@ void app_main(void)
     /* Join room */
     ESP_ERROR_CHECK(matrix_client_join_room(&g_client, room_config));
 
-    /* Query room members' device keys for E2EE */
+    /* Query room members' device keys and pre-share Megolm session at boot */
     if (g_e2ee_active) {
-        /* Query keys for room members we might communicate with.
-         * For now, query the admin user. In the future, get the member list. */
         matrix_e2ee_query_keys(&g_e2ee, &g_client, "@sash710:simplego.dev");
+        matrix_e2ee_ensure_outbound_session(&g_e2ee, &g_client, g_client.room_id);
+        ESP_LOGI(TAG, "E2EE key sharing complete at boot");
     }
 
     /* Register device in room via state event */
