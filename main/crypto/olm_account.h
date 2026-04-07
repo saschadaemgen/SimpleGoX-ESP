@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define OLM_MAX_ONE_TIME_KEYS 10
+#define OLM_MAX_ONE_TIME_KEYS 50
 
 typedef struct {
     uint8_t ed25519_private[64];    /* libsodium 64-byte secret key */

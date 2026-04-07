@@ -51,11 +51,13 @@ esp_err_t olm_account_generate_one_time_keys(olm_account_t *account, int count)
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* Priority for slot reuse:
+     * 1. Empty slots (key_id == 0)
+     * 2. Used slots (already consumed by a peer)
+     * 3. Published slots (on the server, can be replaced with fresh keys) */
     int generated = 0;
     for (int i = 0; i < OLM_MAX_ONE_TIME_KEYS && generated < count; i++) {
-        if (!account->one_time_keys[i].used &&
-            account->one_time_keys[i].key_id == 0) {
-            /* Empty slot: generate a new Curve25519 keypair */
+        if (account->one_time_keys[i].key_id == 0) {
             crypto_random_bytes(account->one_time_keys[i].private_key, 32);
             crypto_curve25519_base(account->one_time_keys[i].public_key,
                                     account->one_time_keys[i].private_key);
@@ -65,8 +67,6 @@ esp_err_t olm_account_generate_one_time_keys(olm_account_t *account, int count)
             generated++;
         }
     }
-
-    /* If not enough empty slots, overwrite used ones */
     for (int i = 0; i < OLM_MAX_ONE_TIME_KEYS && generated < count; i++) {
         if (account->one_time_keys[i].used) {
             crypto_random_bytes(account->one_time_keys[i].private_key, 32);
@@ -78,6 +78,9 @@ esp_err_t olm_account_generate_one_time_keys(olm_account_t *account, int count)
             generated++;
         }
     }
+    /* Never overwrite published-but-not-used slots: they may still be
+     * on the server waiting to be claimed. With 50 slots there is enough
+     * room for ~40 published keys plus 10 fresh ones at any time. */
 
     ESP_LOGI(TAG, "Generated %d one-time keys", generated);
     return ESP_OK;
