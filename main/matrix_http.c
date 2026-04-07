@@ -31,6 +31,8 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         if (ctx->buf != NULL) {
             int remaining = ctx->buf_size - ctx->data_len - 1;
             if (remaining <= 0) {
+                ESP_LOGW("matrix_http", "Response buffer full (%d bytes), data truncated!",
+                         ctx->buf_size);
                 break;
             }
             int copy_len = MIN(evt->data_len, remaining);
