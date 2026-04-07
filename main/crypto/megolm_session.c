@@ -109,6 +109,10 @@ static esp_err_t megolm_derive_keys(const megolm_ratchet_t *ratchet,
     memcpy(ikm + 64, ratchet->data[2], 32);
     memcpy(ikm + 96, ratchet->data[3], 32);
 
+    ESP_LOGI(TAG, "derive_keys: ikm[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x counter=%lu",
+             ikm[0], ikm[1], ikm[2], ikm[3], ikm[4], ikm[5], ikm[6], ikm[7],
+             (unsigned long)ratchet->counter);
+
     uint8_t expanded[80];
     esp_err_t err = crypto_hkdf_sha256(ikm, 128, NULL, 0,
                                         (const uint8_t *)"MEGOLM_KEYS", 11,
@@ -163,6 +167,11 @@ esp_err_t megolm_outbound_encrypt(megolm_outbound_session_t *session,
     esp_err_t err = megolm_derive_keys(&session->ratchet, aes_key, hmac_key, iv);
     if (err != ESP_OK) { return err; }
 
+    ESP_LOGI(TAG, "  Derived: aes=%02x%02x%02x%02x hmac=%02x%02x%02x%02x iv=%02x%02x%02x%02x",
+             aes_key[0], aes_key[1], aes_key[2], aes_key[3],
+             hmac_key[0], hmac_key[1], hmac_key[2], hmac_key[3],
+             iv[0], iv[1], iv[2], iv[3]);
+
     /* AES-CBC output: plaintext + up to 16 bytes PKCS#7 padding */
     size_t ct_buf_size = plaintext_len + 32;
     uint8_t *ciphertext = malloc(ct_buf_size);
@@ -196,6 +205,15 @@ esp_err_t megolm_outbound_encrypt(megolm_outbound_session_t *session,
     ESP_LOGI(TAG, "Megolm encrypt: session=%s, msg_index=%lu, ct_len=%d",
              session->session_id_b64,
              (unsigned long)session->ratchet.counter, (int)ct_len);
+    ESP_LOGI(TAG, "  Ratchet: R0=%02x%02x%02x%02x R1=%02x%02x%02x%02x R2=%02x%02x%02x%02x R3=%02x%02x%02x%02x",
+             session->ratchet.data[0][0], session->ratchet.data[0][1],
+             session->ratchet.data[0][2], session->ratchet.data[0][3],
+             session->ratchet.data[1][0], session->ratchet.data[1][1],
+             session->ratchet.data[1][2], session->ratchet.data[1][3],
+             session->ratchet.data[2][0], session->ratchet.data[2][1],
+             session->ratchet.data[2][2], session->ratchet.data[2][3],
+             session->ratchet.data[3][0], session->ratchet.data[3][1],
+             session->ratchet.data[3][2], session->ratchet.data[3][3]);
 
     megolm_payload_t payload = {
         .message_index = session->ratchet.counter,
@@ -280,6 +298,17 @@ esp_err_t megolm_outbound_get_session_key(const megolm_outbound_session_t *sessi
         pos += 32;
     }
 
+    ESP_LOGI(TAG, "Session key export: counter=%lu, R0=%02x%02x%02x%02x R1=%02x%02x%02x%02x R2=%02x%02x%02x%02x R3=%02x%02x%02x%02x",
+             (unsigned long)idx,
+             session->ratchet.data[0][0], session->ratchet.data[0][1],
+             session->ratchet.data[0][2], session->ratchet.data[0][3],
+             session->ratchet.data[1][0], session->ratchet.data[1][1],
+             session->ratchet.data[1][2], session->ratchet.data[1][3],
+             session->ratchet.data[2][0], session->ratchet.data[2][1],
+             session->ratchet.data[2][2], session->ratchet.data[2][3],
+             session->ratchet.data[3][0], session->ratchet.data[3][1],
+             session->ratchet.data[3][2], session->ratchet.data[3][3]);
+
     /* Ed25519 public key */
     memcpy(out + pos, session->signing_public, 32);
     pos += 32;
@@ -290,6 +319,13 @@ esp_err_t megolm_outbound_get_session_key(const megolm_outbound_session_t *sessi
     if (err != ESP_OK) { return err; }
     memcpy(out + pos, sig, 64);
     pos += 64;
+
+    /* Log the complete session key (229 bytes) as base64 */
+    {
+        char sk_b64_log[320];
+        crypto_base64_encode(out, pos, sk_b64_log, sizeof(sk_b64_log));
+        ESP_LOGI(TAG, "SESSION_KEY_B64=%s", sk_b64_log);
+    }
 
     *out_len = pos; /* Should be 229 */
     return ESP_OK;
